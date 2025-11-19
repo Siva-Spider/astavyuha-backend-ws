@@ -1,0 +1,43 @@
+app = "astavyuha-backend"
+primary_region = "bom"
+
+kill_signal = "SIGINT"
+kill_timeout = 5
+
+[build]
+  # Fly will build automatically using Dockerfile
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+# ───────────────────────────────────────────────
+# Process Groups
+# ───────────────────────────────────────────────
+[processes]
+  # Web server (FastAPI/Flask using Gunicorn + Uvicorn)
+  web = "gunicorn app.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8080 --workers 1"
+
+  # Celery worker
+  worker = "celery -A app.celery_app.celery worker --loglevel=info"
+
+# ───────────────────────────────────────────────
+# Services (Web HTTP Listener)
+# ───────────────────────────────────────────────
+[[services]]
+  internal_port = 8080
+  processes = ["web"]
+  protocol = "tcp"
+
+  [services.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 40
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443

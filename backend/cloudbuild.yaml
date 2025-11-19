@@ -1,0 +1,27 @@
+steps:
+  # Step 1: Build and push Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build', '-t', 'us-central1-docker.pkg.dev/astavyuha-backend/astavyuha-repo/backend:$COMMIT_SHA', '.'
+    ]
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'push', 'us-central1-docker.pkg.dev/astavyuha-backend/astavyuha-repo/backend:$COMMIT_SHA'
+    ]
+
+  # Step 2: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      [
+        'run', 'deploy', 'astavyuha-backend',
+        '--image', 'us-central1-docker.pkg.dev/astavyuha-backend/astavyuha-repo/backend:$COMMIT_SHA',
+        '--region', 'us-central1',
+        '--platform', 'managed',
+        '--allow-unauthenticated',
+        '--port', '8080'
+      ]
+
+images:
+  - 'us-central1-docker.pkg.dev/astavyuha-backend/astavyuha-repo/backend:$COMMIT_SHA'

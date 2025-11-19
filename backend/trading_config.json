@@ -1,0 +1,52 @@
+{
+  "tradingParameters": [
+    {
+      "type": "EQUITY",
+      "total_shares": 5500,
+      "symbol_key": "HDFC BANK LTD",
+      "symbol_value": "HDFCBANK",
+      "broker": "u",
+      "interval": "1",
+      "lots": "10",
+      "target_percentage": "25",
+      "strategy": "Ema10_Ema20_MACD_Supertrend",
+      "lot_size": 550,
+      "tick_size": 0.05
+    },
+    {
+      "symbol_value": "ICICIBANK",
+      "symbol_key": "ICICI BANK LTD.",
+      "broker": "u",
+      "strategy": "ADX_MACD_WillR_Supertrend",
+      "interval": "1",
+      "lots": "10",
+      "lot_size": 700,
+      "total_shares": 7000,
+      "target_percentage": "25",
+      "type": "EQUITY",
+      "tick_size": 0.05
+    }
+  ],
+  "selectedBrokers": [
+    {
+      "name": "u",
+      "credentials": {
+        "access_token": "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIwMEFQOEciLCJqdGkiOiI2OTEwMGRlZjMyNDFjMTE5ZGU0NDM0MzIiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaWF0IjoxNzYyNjU5ODIzLCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE3NjI3MjU2MDB9.GKyMrpefh-PjCDuB3blIymS0717r7dkTGUgyiglDhPk"
+      },
+      "profileData": {
+        "profile": {
+          "User ID": "00AP8G",
+          "User Name": "GAIKWAD UMADEVI",
+          "Email": "sivag.7916@gmail.com"
+        },
+        "balance": {
+          "Total Balance": -23.6,
+          "Available Margin": -23.6,
+          "Used Margin": 0
+        },
+        "status": "success",
+        "message": "Connected successfully."
+      }
+    }
+  ]
+}
