@@ -104,7 +104,7 @@ def all_indicators(df,strategy):
         indicator_cols = ['ema10', 'ema20', 'MACD', 'MACD_signal', 'Supertrend']
     else:
         # default: return all computed indicators plus base columns
-        indicator_cols = ['Supertrend', 'MACD', 'MACD_signal', 'MACD_hist', 'ADX', 'WillR_14', 'ema10', 'ema20']
+        indicator_cols = ['Supertrend', 'MACD', 'MACD_signal', 'MACD_hist', 'ADX', 'ADX_EMA21', 'WillR_14', 'ema10', 'ema20']
 
         # ensure requested columns exist
     out_cols = [c for c in base_cols if c in df.columns] + [c for c in indicator_cols if c in df.columns]

@@ -38,7 +38,7 @@ stock_map = {
     "INFOSYS LIMITED": "INFY",
     "TATA CONSULTANCY SERV LT": "TCS",
     "STATE BANK OF INDIA": "SBIN",
-    "AXIS BANK LTD": "AXISBANK",
+    "AXIS BANK LIMITED": "AXISBANK",
     "KOTAK MAHINDRA BANK LTD": "KOTAKBANK",
     "ITC LTD": "ITC",
     "LARSEN & TOUBRO LTD.": "LT",
@@ -104,7 +104,7 @@ reverse_stock_map = {}
 
 @celery_app.task(bind=True)
 def start_trading_loop(self):
-    logger_util.push_log("🚀 Trading engine started inside Celery worker.")
+    print("🚀Trading engine started inside Celery worker.")
     try:
         with open("trading_config.json", "r") as f:
             config = json.load(f)
