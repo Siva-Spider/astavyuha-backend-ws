@@ -83,6 +83,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Astavyuha API Running"}
+
 @app.on_event("startup")
 async def startup_event():
     logger_util.fastapi_log("🔥 FASTAPI STARTUP", user_id = "admin", level = "info")
