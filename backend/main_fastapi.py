@@ -785,7 +785,7 @@ async def delete_rejected_user(userId: str):
         cursor.execute("DELETE FROM rejected_users WHERE userId=?", (userId,))
         conn.commit()
         conn.close()
-        logger_util.fastapi_log(f"🗑️ Deleted rejected user {userId}", user_id = "admin", levle = "info")
+        logger_util.fastapi_log(f"🗑️ Deleted rejected user {userId}", user_id = "admin", level = "info")
         return {"success": True, "message": f"Rejected user {userId} deleted successfully"}
     except Exception as e:
         logger_util.fastapi_log(f"❌ Error deleting rejected user {userId}: {e}",user_id = "admin", level = "error")
