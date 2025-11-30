@@ -423,8 +423,8 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                 gc.collect()
 
             # END FOR each stock
-            logger_util.push_log(f"✅ Trading cycle completed at {now_interval}", levle = "info",  user_id = user_id, log_type = "trading")
-            logger_util.push_log(f"⏳ Waiting for next interval at {next_interval}...", levle = "info", user_id = user_id, log_type = "trading")
+            logger_util.push_log(f"✅ Trading cycle completed at {now_interval}", level = "info",  user_id = user_id, log_type = "trading")
+            logger_util.push_log(f"⏳ Waiting for next interval at {next_interval}...", level = "info", user_id = user_id, log_type = "trading")
 
             gsleep(1)
 
