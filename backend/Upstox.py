@@ -441,7 +441,7 @@ def upstox_place_order_single(user_id, access_token, instrument_token, quantity,
             elif transaction_type == "SELL":
                 logger_util.push_log("Old option position closed successfully")
         else:
-            logger_util.push_log(f"Order placed not successful. The response code is : {response.status_code}",user_id = user_id, levle = "warning", log_type = "trading")
+            logger_util.push_log(f"Order placed not successful. The response code is : {response.status_code}",user_id = user_id, level = "warning", log_type = "trading")
 
 
     except Exception as e:
