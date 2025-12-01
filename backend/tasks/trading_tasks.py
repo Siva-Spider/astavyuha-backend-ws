@@ -146,16 +146,6 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
         except Exception as e:
             logger_util.push_log(f"❌ Redis error initializing active trades for {user_id}: {e}", level ="error", user_id = user_id, log_type = "trading")
 
-    # STEP 1: Fetch instrument keys (only for symbols still marked active for this user)
-    for stock in trading_parameters:
-        # Skip symbols not active for this user
-        try:
-            if not r.sismember(active_key, stock.get('symbol_value')):
-                continue
-        except Exception:
-            # Redis issue: be conservative and continue
-            continue
-
         broker_key = stock.get('broker')
         broker_name = broker_map.get(broker_key, "unknown")
         symbol = stock.get('symbol_value')
@@ -164,6 +154,15 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
         company = stock.get("symbol_key", symbol)
         interval = stock.get('interval')
         exchange_type = stock.get('type')
+        # STEP 1: Fetch instrument keys (only for symbols still marked active for this user)
+        for stock in trading_parameters:
+            # Skip symbols not active for this user
+            try:
+                if not r.sismember(active_key, stock.get('symbol_value')):
+                    continue
+            except Exception:
+                # Redis issue: be conservative and continue
+                continue
 
         logger_util.push_log(
             f"🔑 Fetching instrument key for company : {company}, Name : {name} symbol :{symbol} via Broker : {broker_name}...", level = "info", user_id = user_id, log_type = "trading")
