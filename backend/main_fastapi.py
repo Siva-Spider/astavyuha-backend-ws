@@ -516,26 +516,41 @@ async def get_lot_size_post(request: Request):
 @app.post("/api/disconnect-stock")
 async def disconnect_stock(request: Request):
     """
-    Disconnect a symbol from active trades.
-    Removes it from Redis active_trades set.
+    Disconnect a symbol from active trades for a specific user.
+    This updates the SAME Redis keys that Celery uses.
     """
     import redis
     data = await request.json()
     symbol = data.get("symbol_value")
     user_id = data.get("userId")
-    if not symbol:
-        return {"success": False, "message": "Symbol missing."}
+
+    if not symbol or not user_id:
+        return {"success": False, "message": "Symbol or user ID missing."}
 
     try:
-        r = redis.StrictRedis(host="localhost", port=6379, db=5, decode_responses=True)
-        removed = r.srem("active_trades", symbol)
+        # ✅ IMPORTANT: use the SAME DB as Celery (default DB 0)
+        r = redis.StrictRedis(host="localhost", port=6379, db=0, decode_responses=True)
+
+        # ✅ Celery stores per-user active set as active_trades:{user_id}
+        active_key = f"active_trades:{user_id}"
+
+        # Remove the symbol from that user's active trades
+        removed = r.srem(active_key, symbol)
+
         if removed:
-            logger_util.push_log(f"🛑 User disconnected {symbol} — stopping trade after current interval.", user_id = user_id, level= "info", log_type = "fastapi")
+            logger_util.push_log(
+                f"🛑 Disconnect requested for {symbol} — it will not be traded from next cycle.",
+                user_id=user_id,
+                level="info",
+                log_type="fastapi"
+            )
             return {"success": True, "message": f"{symbol} disconnected."}
         else:
             return {"success": False, "message": f"{symbol} was not active."}
+
     except Exception as e:
         return {"success": False, "message": f"Redis error: {e}"}
+
 
 @app.post("/api/close-position")
 async def close_position(request: Request):
