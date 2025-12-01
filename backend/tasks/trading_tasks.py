@@ -282,6 +282,19 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                 if not r.sismember(active_key, symbol):
                     continue
 
+                # ⭐ NEW: Per-stock stop flag check
+                stop_key = f"stop:{user_id}:{symbol}"
+                if r.get(stop_key):
+                    logger_util.push_log(
+                        f"🛑 Stopping trade for {symbol}",
+                        level="info",
+                        user_id=user_id,
+                        log_type="trading"
+                    )
+                    r.srem(active_key, symbol)   # remove from active list
+                    r.delete(stop_key)           # clean flag
+                    continue     # skip trading this stock (but keep others running)
+
                 broker_key = stock.get('broker')
                 broker_name = broker_map.get(broker_key)
                 company = stock.get('symbol_key')
