@@ -181,10 +181,10 @@ def upstox_fetch_historical_data_with_retry(user_id, access_token, instrument_ke
     """Fetches historical 30-minute OHLC data, retrying for previous days."""
     today = datetime.date.today()
     end_date = (today - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-    if interval == 1:
-        candle_days = 50
+    if interval == "1" or interval == "5" or interval == "15":
+        candle_days = 30
     else:
-        candle_days = 70
+        candle_days = 90
     start = today - datetime.timedelta(candle_days)
     start_date = start.strftime('%Y-%m-%d')
     logger_util.push_log(instrument_key)
