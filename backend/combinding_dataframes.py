@@ -1,29 +1,40 @@
 from collections import deque
 import pandas as pd
 
-def combinding_dataframes(hdf, idf):
-    candle_buffer = deque(maxlen=500)
-    if hdf is not None and not hdf.empty:
-        for dt, row in hdf.iterrows():
-            candle1 = {
-                'datetime': dt,
-                'open': row['open'],
-                'high': row['high'],
-                'low': row['low'],
-                'close': row['close']
-            }
-            candle_buffer.append(candle1)
-    if idf is not None and not idf.empty:
-        for dt, row in idf.iterrows():
-            candle2 = {
-                'datetime': dt,
-                'open': row['open'],
-                'high': row['high'],
-                'low': row['low'],
-                'close': row['close']
-            }
-            candle_buffer.append(candle2)
+def combinding_dataframes(*dfs):
 
-    # Convert candle_buffer to DataFrame
-    df = pd.DataFrame(candle_buffer)
-    return df
+    candle_buffer = []
+
+    # Collect candles from each DF
+    for df in dfs:
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            continue
+
+        for dt, row in df.iterrows():
+            candle_buffer.append({
+                'datetime': dt,
+                'open': row['open'],
+                'high': row['high'],
+                'low': row['low'],
+                'close': row['close'],
+            })
+
+    if not candle_buffer:
+        return pd.DataFrame()
+
+    # Convert to DataFrame
+    final_df = pd.DataFrame(candle_buffer)
+
+    # Convert column to datetime
+    final_df['datetime'] = pd.to_datetime(final_df['datetime'])
+
+    # Remove duplicates based on datetime
+    final_df.drop_duplicates(subset=['datetime'], keep='last', inplace=True)
+
+    # Sort by datetime
+    final_df.sort_values('datetime', inplace=True)
+
+    # Set datetime as index
+    final_df.set_index('datetime', inplace=True)
+
+    return final_df
