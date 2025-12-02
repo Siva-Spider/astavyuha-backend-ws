@@ -321,8 +321,9 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                         if access_token:
                             hdf = us.upstox_fetch_historical_data_with_retry( user_id, access_token, instrument_key, interval)
                             idf = us.upstox_fetch_intraday_data(user_id, access_token, instrument_key, interval)
-                            if hdf is not None and idf is not None:
-                                combined_df = cdf.combinding_dataframes(hdf, idf)
+                            ohlc_df = us.upstox_ohlc_data_fetch(user_id, access_token, instrument_key)
+                            if hdf is not None and idf is not None and ohlc_df is not None:
+                                combined_df = cdf.combinding_dataframes(hdf, idf, ohlc_df)
 
                     elif broker_name == "zerodha":
                         broker_info = next(
