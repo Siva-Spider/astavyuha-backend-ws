@@ -297,11 +297,11 @@ def upstox_ohlc_data_fetch(access_token, instrument_key):
     for attempt in range(1, retries + 1):
         try:
             response = requests.get(url, headers=headers, params=params)
-
+            data_json = response.json()
             if response.status_code == 200:
                 try:
-                    json_key = instrument_key.replace('|', ':')
-                    data = response.json()['data'][json_key]
+                    json_key = list(data_json["data"].keys())[0]
+                    data = data_json["data"][json_key]
                     prev = data['prev_ohlc']
 
                     ist = pytz.timezone("Asia/Kolkata")
@@ -319,14 +319,14 @@ def upstox_ohlc_data_fetch(access_token, instrument_key):
                     }
 
                 except KeyError as e:
-                    logger_util.push_log(f"OHLC KeyError in response: {e}", "error")
+                    logger_util.push_log(f"OHLC KeyError in response: {e}", user_id = user_id, level = "error", log_type = "trading")
                     return None
             else:
-                logger_util.push_log("OHLC Error:, {response.status_code}, {response.text}", "error")
+                logger_util.push_log("OHLC Error:, {response.status_code}, {response.text}", user_id = user_id, level = "error", log_type = "trading")
                 time.sleep(2)
                 return None
         except requests.exceptions.RequestException as e:
-            logger_util.push_log(f"🔌 OHLC Network error (attempt {attempt}/{retries}): {e}", "error")
+            logger_util.push_log(f"🔌 OHLC Network error (attempt {attempt}/{retries}): {e}", user_id = user_id, level = "error", log_type = "trading")
 
         time.sleep(1)
 
