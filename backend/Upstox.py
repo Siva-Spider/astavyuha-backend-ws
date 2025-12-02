@@ -281,7 +281,7 @@ def upstox_fetch_positions(user_id, access_token):
     return []
 
 
-def upstox_ohlc_data_fetch(access_token, instrument_key):
+def upstox_ohlc_data_fetch(user_id, access_token, instrument_key):
     retries = 3
     url = 'https://api.upstox.com/v3/market-quote/ohlc'
     headers = {
