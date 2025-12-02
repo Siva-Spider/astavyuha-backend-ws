@@ -707,10 +707,10 @@ async def approve_user(userId: str):
 
         # Call your existing SMTP mailer
         send_email(u_email, subject, body)
-        logger_util.fastapi_log(f"✅ Approved pending user {userId}", user_id = "admin", level = "info", log_type = "fastapi")
+        logger_util.fastapi_log(f"✅ Approved pending user {userId}", user_id = "admin", level = "info")
         return {"success": True, "message": f"User {userId} approved"}
     except Exception as e:
-        logger_util.fastapi_log(f"❌ Error approving user {userId}: {e}", user_id = "admin",  level = "error", log_type = "fastapi")
+        logger_util.fastapi_log(f"❌ Error approving user {userId}: {e}", user_id = "admin",  level = "error")
         raise HTTPException(status_code=500, detail=str(e))
 
 
