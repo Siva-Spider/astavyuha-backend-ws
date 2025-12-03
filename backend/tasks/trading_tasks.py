@@ -397,6 +397,8 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                     )
                     lots = stock.get("lots")
                     target_pct = stock.get("target_percentage")
+                    if target_pct == 0 or target_pct == None or target_pct == "0":
+                        target_pct = 0
 
                     if broker_name == "upstox":
                         # Upstox execution uses access_token inside creds
