@@ -1,7 +1,53 @@
 
 import pandas as pd
 import numpy as np
+import ta
+def supertrend(df, period=8, multiplier=3.2):
+    # --- ATR ---
+    atr = ta.volatility.AverageTrueRange(
+        df['high'], df['low'], df['close'], window=period
+    ).average_true_range()
 
+    hl2 = (df['high'] + df['low']) / 2
+
+    upperband = hl2 + multiplier * atr
+    lowerband = hl2 - multiplier * atr
+
+    # Prepare arrays
+    supertrend = [True] * len(df)
+    final_upper = upperband.copy()
+    final_lower = lowerband.copy()
+
+    # --- MAIN LOOP (no deprecated behavior) ---
+    for i in range(1, len(df)):
+        curr_close = df['close'].iat[i]
+        prev_close = df['close'].iat[i - 1]
+
+        # Trend flip
+        if curr_close > final_upper.iat[i - 1]:
+            supertrend[i] = True
+        elif curr_close < final_lower.iat[i - 1]:
+            supertrend[i] = False
+        else:
+            # inherit trend
+            supertrend[i] = supertrend[i - 1]
+
+            # adjust lower band if trend is bullish
+            if supertrend[i] and final_lower.iat[i] < final_lower.iat[i - 1]:
+                final_lower.iat[i] = final_lower.iat[i - 1]
+
+            # adjust upper band if trend is bearish
+            if not supertrend[i] and final_upper.iat[i] > final_upper.iat[i - 1]:
+                final_upper.iat[i] = final_upper.iat[i - 1]
+
+    # Create final supertrend line
+    df['supertrend'] = [
+        final_lower.iat[i] if supertrend[i] else final_upper.iat[i]
+        for i in range(len(df))
+    ]
+
+    return df['supertrend']
+    
 def all_indicators(df,strategy):
     df = df.copy()
     tf =df.copy()
@@ -14,30 +60,8 @@ def all_indicators(df,strategy):
     low_close = (df['low'] - df['close'].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
 
-    # ========================
-    # ✅ Supertrend (7,3)
-    # ========================
-    period, multiplier = 7, 3
-    atr = tr.rolling(period).mean()
-    hl2 = (df['high'] + df['low']) / 2
-    upperband = hl2 + (multiplier * atr)
-    lowerband = hl2 - (multiplier * atr)
-
-    st = pd.Series(index=df.index)
-    trend = True  # start as bullish
-    for i in range(len(df)):
-        if i == 0:
-            st.iloc[i] = np.nan
-            continue
-        if df['close'].iloc[i] > upperband.iloc[i - 1]:
-            trend = True
-        elif df['close'].iloc[i] < lowerband.iloc[i - 1]:
-            trend = False
-        if trend:
-            st.iloc[i] = lowerband.iloc[i]
-        else:
-            st.iloc[i] = upperband.iloc[i]
-    df['Supertrend'] = st
+    
+    df['Supertrend'] = supertrend(df, period=8, multiplier=3.2)
 
     # ========================
     # ✅ MACD (12,26,9)
