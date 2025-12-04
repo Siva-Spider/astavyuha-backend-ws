@@ -119,7 +119,30 @@ def start_trading_loop(self, config: dict):
 
     logger_util.push_log("✅ Trading engine task finished successfully.", level = "info", user_id = "admin", log_type = "trading")
 
+def resample_candle_data(intra_df_1m, interval):
+    if intra_df_1m is None or intra_df_1m.empty:
+        return pd.DataFrame()
 
+    interval = int(interval)
+    rule = f"{interval}min"
+
+    # RESAMPLE WITH MARKET START TIME ALIGNMENT (09:15 AM)
+    df_resampled = intra_df_1m.resample(
+        rule,
+        origin="start_day",
+        offset="15min"
+    ).agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last"
+    })
+
+    # Remove incomplete candle
+    df_resampled.dropna(inplace=True)
+
+    return df_resampled.tail(1)
+    
 def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
     """
     Main trading loop for a single user.
@@ -307,6 +330,7 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                 logger_util.push_log(f"🕯 Fetching candles for {symbol}-{company} from {broker_name}", level = "info", user_id = user_id, log_type = "trading")
 
                 combined_df = None
+                resampled_candle = None
                 # local holders for session/auth_token used in different broker flows
                 session = None
                 auth_token = None
@@ -319,11 +343,15 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                             None
                         )
                         if access_token:
-                            hdf = us.upstox_fetch_historical_data_with_retry( user_id, access_token, instrument_key, interval)
+                            hdf = us.upstox_fetch_historical_data_with_retry(user_id, access_token, instrument_key,interval)
                             idf = us.upstox_fetch_intraday_data(user_id, access_token, instrument_key, interval)
+                            idf_1m = us.upstox_fetch_intraday_data(user_id, access_token, instrument_key, 1)
                             ohlc_df = us.upstox_ohlc_data_fetch(user_id, access_token, instrument_key)
-                            if hdf is not None and idf is not None and ohlc_df is not None:
-                                combined_df = cdf.combinding_dataframes(hdf, idf, ohlc_df)
+                            if idf_1m is not None and ohlc_df is not None:
+                                combine_1m = cdf.combinding_dataframes(idf_1m, ohlc_df)
+                                resampled_candle = resample_candle_data(combine_1m, interval)
+                            if hdf is not None and idf is not None and resampled_candle is not None:
+                                combined_df = cdf.combinding_dataframes(hdf, idf, resampled_candle)
 
                     elif broker_name == "zerodha":
                         broker_info = next(
