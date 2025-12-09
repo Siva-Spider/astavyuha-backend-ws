@@ -402,11 +402,7 @@ def upstox_close_position(credentials, pos):
 def upstox_place_order_single(user_id, access_token, instrument_token, quantity, transaction_type,price):
 
     quantity = abs(quantity)
-    if price == 0:
-        order_type = "MARKET"
-    else:
-        order_type = "LIMIT"
-
+    price = 0
 
     url = 'https://api-hft.upstox.com/v3/order/place'
     headers = {
@@ -422,7 +418,7 @@ def upstox_place_order_single(user_id, access_token, instrument_token, quantity,
         'price': price,
         'tag': 'string',
         'instrument_token': instrument_token,
-        'order_type': order_type,
+        'order_type': "MARKET",
         'transaction_type': transaction_type,
         'disclosed_quantity': 0,
         'trigger_price': price,
