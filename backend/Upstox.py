@@ -756,8 +756,31 @@ def upstox_trade_conditions_check(user_id, lots, tgt, indicators_df5, credential
     trade_count = stj.load_variable_from_json(user_id, symbol, "trade_count")
     tgt = float(tgt)
     upstox_access_token = credentials['access_token']
-
-    if trade_count == 0:
+    positions_count = 0
+    positions11 = upstox_fetch_positions(user_id, upstox_access_token)
+    if positions11:
+        for pos in positions11:
+            quantity = pos['quantity']
+            if quantity > 0:
+                instrument_token = pos['instrument_token']
+                tradingsymbol = pos['tradingsymbol']
+                option_type = tradingsymbol[-2:]
+                match = re.match(r'^([A-Z]+)', tradingsymbol)
+                if match:
+                    stock_name = match.group(1)
+                else:
+                    stock_name = None
+                latest_option_data = upstox_ohlc_data_fetch(user_id, upstox_access_token, instrument_token)
+                latest_option_close = float(latest_option_data["close"])
+                saved_target_price = stj.load_variable_from_json(user_id, symbol, "target_price")
+                if stock_name == symbol:
+                    positions_count += 1
+                if latest_option_close > saved_target_price and saved_target_price != 0 and stock_name == symbol:
+                    upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL",saved_target_price)
+                    positions_count = 0
+    if positions_count == 0:
+        logger_util.push_log(f"There is no existing positions from Upstox for the symbol {symbol}", user_id=user_id, level="info", log_type="trading")
+    if trade_count == 0 and positions_count == 0:
         indic_candle1 = indicators_df5.iloc[-1]
         indic_candle2 = indicators_df5.iloc[-2]
         indic_candle3 = indicators_df5.iloc[-3]
@@ -945,25 +968,7 @@ def upstox_trade_conditions_check(user_id, lots, tgt, indicators_df5, credential
         stj.save_variable_to_json(target_price, user_id, symbol)
     elif trade_count > 0:
         indicators_df = indicators_df5.tail(1)
-        positions11 = upstox_fetch_positions(user_id, upstox_access_token)
-        if positions11:
-            for pos in positions11:
-                quantity = pos['quantity']
-                if quantity > 0:
-                    instrument_token = pos['instrument_token']
-                    tradingsymbol = pos['tradingsymbol']
-                    option_type = tradingsymbol[-2:]
-                    match = re.match(r'^([A-Z]+)', tradingsymbol)
-                    if match:
-                        stock_name = match.group(1)
-                    else:
-                        stock_name = None
-                    latest_option_data = upstox_ohlc_data_fetch(user_id, upstox_access_token, instrument_token)
-                    latest_option_close = float(latest_option_data["close"])
-                    saved_target_price = stj.load_variable_from_json(user_id, symbol, "target_price")
-                    if latest_option_close > saved_target_price and saved_target_price != 0 and stock_name == symbol:
-                        upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL",
-                                                  saved_target_price)
+
         if strategy == "ADX_MACD_WillR_Supertrend":
             # ✅ Check for signal
             latest_adx = indicators_df["ADX"].iloc[-1]
