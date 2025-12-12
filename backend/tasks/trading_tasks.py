@@ -13,10 +13,13 @@ from backend import Fivepaisa as fp
 from backend import Next_Now_intervals as nni
 from backend import combinding_dataframes as cdf
 from backend import indicators as ind
+import backend.save_to_json as stj
+from tabulate import tabulate
 from time import sleep as gsleep
 import redis
 import os
 import ssl
+import pandas as pd
 
 # ---- Celery setup ----
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
@@ -144,6 +147,8 @@ def resample_candle_data(intra_df_1m, interval):
     return df_resampled.tail(1)
     
 def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
+    print(f" ****** {trading_parameters}")
+    print(f" ****** {selected_brokers}")
     """
     Main trading loop for a single user.
     This function preserves your original logic but uses per-user Redis keys
@@ -151,6 +156,7 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
     """
     logger_util.push_log("✅ Trading loop started for all selected stocks",level = "info", user_id = user_id, log_type = "trading")
     logger_util.push_log("⏳ Starting trading cycle setup...", level = "info", user_id = user_id, log_type = "trading")
+    VARIABLES_TO_RESET = ["target_price", "trade_count"]
 
     # Build per-user active set
     active_key = get_active_key(user_id)
@@ -169,6 +175,17 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
         except Exception as e:
             logger_util.push_log(f"❌ Redis error initializing active trades for {user_id}: {e}", level ="error", user_id = user_id, log_type = "trading")
 
+
+    # STEP 1: Fetch instrument keys (only for symbols still marked active for this user)
+    for stock in trading_parameters:
+        # Skip symbols not active for this user
+        try:
+            if not r.sismember(active_key, stock.get('symbol_value')):
+                continue
+        except Exception:
+            # Redis issue: be conservative and continue
+            continue
+
         broker_key = stock.get('broker')
         broker_name = broker_map.get(broker_key, "unknown")
         symbol = stock.get('symbol_value')
@@ -177,15 +194,6 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
         company = stock.get("symbol_key", symbol)
         interval = stock.get('interval')
         exchange_type = stock.get('type')
-        # STEP 1: Fetch instrument keys (only for symbols still marked active for this user)
-        for stock in trading_parameters:
-            # Skip symbols not active for this user
-            try:
-                if not r.sismember(active_key, stock.get('symbol_value')):
-                    continue
-            except Exception:
-                # Redis issue: be conservative and continue
-                continue
 
         logger_util.push_log(
             f"🔑 Fetching instrument key for company : {company}, Name : {name} symbol :{symbol} via Broker : {broker_name}...", level = "info", user_id = user_id, log_type = "trading")
@@ -281,14 +289,20 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
         # ⭐ NEW: Global kill flag (backend stop all)
         kill_key = get_kill_key(user_id)
         if r.get(kill_key) == "1":
+            for symbol in active_symbols:
+                stj.reset_json_variables(user_id, symbol, VARIABLES_TO_RESET)
             logger_util.push_log(f"🛑 STOP SIGNAL RECEIVED for {user_id} — exiting trading loop.", level = "info",  user_id = user_id, log_type = "trading")
             r.delete(kill_key)
             r.delete(active_key)
+
             break
 
         # ⭐ Existing logic: no active trades
         if not trading_parameters or len(active_symbols) == 0 or r.scard(active_key) == 0:
             logger_util.push_log(f"🏁 All trades stopped for {user_id} — exiting trading loop.", level = "info", user_id = user_id, log_type = "trading")
+            for symbol in active_symbols:
+                stj.reset_json_variables(user_id, symbol, VARIABLES_TO_RESET)
+
             break
 
         now = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
@@ -314,6 +328,7 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                         user_id=user_id,
                         log_type="trading"
                     )
+                    stj.reset_json_variables(user_id, symbol, VARIABLES_TO_RESET)
                     r.srem(active_key, symbol)   # remove from active list
                     r.delete(stop_key)           # clean flag
                     continue     # skip trading this stock (but keep others running)
@@ -361,8 +376,8 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                             kite = zr.kite_connect_from_credentials(
                                 broker_info['credentials']
                             )
-                            hdf = zr.zerodha_historical_data(kite, instrument_key, interval)
-                            idf = zr.zerodha_intraday_data(kite, instrument_key, interval)
+                            hdf = zr.zerodha_historical_data(user_id, kite, instrument_key, interval)
+                            idf = zr.zerodha_intraday_data(user_id, kite, instrument_key, interval)
                             if hdf is not None and idf is not None:
                                 combined_df = cdf.combinding_dataframes(hdf, idf)
 
@@ -411,12 +426,8 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                 if indicators_df is None or indicators_df.empty:
                     logger_util.push_log(f"⚠️ Indicators empty for {symbol}, skipping.", level = "warning", user_id = user_id, log_type = "trading")
                     continue
-
-                row = indicators_df.tail(1).iloc[0]
-
-                cols = indicators_df.columns.tolist()
-                formatted = " | ".join([f"{c}:{row[c]}" for c in cols])
-                logger_util.push_log(f"📊 Indicators: {formatted}", level = "info", user_id = user_id, log_type = "trading")
+                logger_util.push_log(f"📊 Indicators:", level = "info", user_id = user_id, log_type = "trading")
+                logger_util.push_log(tabulate(indicators_df.tail(1), headers="keys", tablefmt="pretty"), user_id=user_id,level="indicator", log_type="trading")
 
                 try:
                     creds = next(
@@ -431,11 +442,11 @@ def run_trading_logic_for_all(user_id, trading_parameters, selected_brokers):
                     if broker_name == "upstox":
                         # Upstox execution uses access_token inside creds
                         us.upstox_trade_conditions_check(user_id,
-                            lots, target_pct, indicators_df.tail(1),
+                            lots, target_pct, indicators_df.tail(5),
                             creds, company, symbol, exchange_type, strategy
                         )
                     elif broker_name == "zerodha":
-                        zr.zerodha_trade_conditions_check(
+                        zr.zerodha_trade_conditions_check(user_id,
                             lots, target_pct, indicators_df.tail(1),
                             creds, symbol, strategy
                         )
