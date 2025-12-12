@@ -323,7 +323,7 @@ async def stop_all_trading(request: Request):
 
     # Set kill flag in Redis
     redis_client.set(get_kill_key(user_id), "1")
-    logger_util.fastapi_log(f"Stop All Trades initiated by user {user_id}", user_id=user_id, level="error")
+    logger_util.fastapi_log(f"Stop All Trades initiated by user {user_id}", user_id=user_id, level="info")
     return {"success": True, "message": f"Stop signal sent for {user_id}"}
 
 
