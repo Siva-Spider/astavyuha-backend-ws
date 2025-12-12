@@ -9,7 +9,8 @@ import pytz
 from tabulate import tabulate
 from backend import Next_Now_intervals
 import backend.logger_util as logger_util
-import logging
+import backend.save_to_json as stj
+import re
 
 """logger = logging.getLogger(__name__)
 
@@ -209,7 +210,7 @@ def upstox_fetch_historical_data_with_retry(user_id, access_token, instrument_ke
             df.drop(['oi'], axis=1, inplace=True)
 
             df['5ema'] = df['close'].ewm(span=5, adjust=False).mean()
-            logger_util.push_log(f"✅ Fetched historical data form: {start_date}")
+            logger_util.push_log(f"✅ Fetched historical data form: {start_date}",user_id = user_id, level = "info", log_type = "trading")
             return df
 
         else:
@@ -322,7 +323,7 @@ def upstox_ohlc_data_fetch(user_id, access_token, instrument_key):
                     logger_util.push_log(f"OHLC KeyError in response: {e}", user_id = user_id, level = "error", log_type = "trading")
                     return None
             else:
-                logger_util.push_log("OHLC Error:, {response.status_code}, {response.text}", user_id = user_id, level = "error", log_type = "trading")
+                logger_util.push_log(f"OHLC Error:, {response.status_code}, {response.text}", user_id = user_id, level = "error", log_type = "trading")
                 time.sleep(2)
                 return None
         except requests.exceptions.RequestException as e:
@@ -544,7 +545,7 @@ def upstox_equity_option_instrument_key( user_id, stock,symbol, spot_value, opti
             nearest_option_df = nearest_option.to_frame().T
 
             instrument_key = nearest_option['instrument_key']
-            logger_util.push_log(tabulate(nearest_option_df, headers="keys", tablefmt= "pretty"), user_id = user_id, level ="warning", log_type = "trading")
+            logger_util.push_log(tabulate(nearest_option_df, headers="keys", tablefmt= "pretty"), user_id = user_id, level ="options", log_type = "trading")
             return nearest_option_df
 
 def upstox_commodity_option_instrument_key(user_id, name, symbol, close_price, option_type):
@@ -612,7 +613,6 @@ def upstox_commodity_option_instrument_key(user_id, name, symbol, close_price, o
 
 def upstox_fetch_option_data(user_id ,upstox_access_token,stock, symbol, exchange_type,spot_value, tgt,lots, option_type):
     # Fetch instruments
-    logger_util.push_log(f"{stock}--{symbol}--{spot_value}--{tgt}--{lots}--{option_type}", user_id = user_id, level = "info", log_type = "trading")
     if exchange_type == "EQUITY":
         nearest_option = upstox_equity_option_instrument_key( user_id, stock,symbol, spot_value, option_type)
     elif exchange_type == "COMMODITY":
@@ -636,7 +636,8 @@ def upstox_fetch_option_data(user_id ,upstox_access_token,stock, symbol, exchang
 
     # Process only the last two candles
     latest_candle = option_intraday_data.iloc[-1]
-
+    logger_util.push_log(tabulate(option_intraday_data.tail(1), headers = "keys", tablefmt= "pretty"), user_id=user_id,
+                         level="options", log_type="trading")
     # Add latest candle to option_buffer
     dt_aware = latest_candle.name if latest_candle.name.tzinfo else ist.localize(latest_candle.name)
     candle = {
@@ -647,23 +648,6 @@ def upstox_fetch_option_data(user_id ,upstox_access_token,stock, symbol, exchang
         'close': latest_candle['close'],
     }
     option_buffer.append(candle)
-
-    logger_util.push_log("+---------------------+----------+----------+----------+----------+", user_id = user_id, level = "info", log_type = "trading")
-    logger_util.push_log("| Time                | Open     | High     | Low      | Close    |", user_id = user_id, level = "info", log_type = "trading")
-    logger_util.push_log("+---------------------+----------+----------+----------+----------+", user_id = user_id, level = "info", log_type = "trading")
-
-    for candle in [latest_candle]:
-        dt_aware = candle.name if candle.name.tzinfo else ist.localize(candle.name)
-        msg = "| {:<19} | {:>8.2f} | {:>8.2f} | {:>8.2f} | {:>8.2f} |".format(
-            dt_aware.strftime('%Y-%m-%d %H:%M'),
-            candle['open'],
-            candle['high'],
-            candle['low'],
-            candle['close']
-        )
-        logger_util.push_log(msg, user_id = user_id, level = "info", log_type = "trading" )
-
-    logger_util.push_log("+---------------------+----------+----------+----------+----------+", user_id = user_id, level = "info", log_type = "trading")
 
     close_price = float(latest_candle["close"])
     target_price = 0
@@ -691,9 +675,11 @@ def upstox_fetch_option_data(user_id ,upstox_access_token,stock, symbol, exchang
                 logger_util.push_log(f"You have live position for the Trading symbol  {symbol}, Skipping the {option_type}Order placing", user_id = user_id, level = "info", log_type = "trading")
                 count += 1
         if count == 0:
-            upstox_gtt_place_order(user_id, upstox_access_token, instrument_key, quantity, "BUY", buy_price,target_price)
+            upstox_place_order_single(user_id, upstox_access_token, instrument_key, quantity, "BUY", buy_price)
     else:
-        upstox_gtt_place_order(user_id, upstox_access_token, instrument_key, quantity, "BUY", buy_price,target_price)
+        upstox_place_order_single(user_id, upstox_access_token, instrument_key, quantity, "BUY", buy_price)
+
+    return target_price
 
 def upstox_commodity_instrument_key(user_id, name, symbol):
     # Load instrument data
@@ -765,207 +751,421 @@ def upstox_commodity_instrument_key(user_id, name, symbol):
 
     return matched
 
-def upstox_trade_conditions_check(user_id, lots, tgt, indicators_df, credentials, stock,symbol, exchange_type,strategy):
+def upstox_trade_conditions_check(user_id, lots, tgt, indicators_df5, credentials, stock,symbol, exchange_type,strategy):
+    target_price = stj.load_variable_from_json(user_id, symbol, "target_price")
+    trade_count = stj.load_variable_from_json(user_id, symbol, "trade_count")
+    tgt = float(tgt)
     upstox_access_token = credentials['access_token']
-    if strategy == "ADX_MACD_WillR_Supertrend":
-        # ✅ Check for signal
-        latest_adx = indicators_df["ADX"].iloc[-1]
-        latest_adxema = indicators_df['ADX_EMA21'].iloc[-1]
-        latest_willr = indicators_df['WillR_14'].iloc[-1]
-        latest_supertrend = indicators_df['Supertrend'].iloc[-1]
-        latest_macd = indicators_df['MACD'].iloc[-1]
-        latest_macd_signal = indicators_df['MACD_signal'].iloc[-1]
-        close_price = float(indicators_df['close'].iloc[-1])
-        tgt = float(tgt)
 
-        positions1 = upstox_fetch_positions(user_id, upstox_access_token)
-        if positions1:
-            for pos in positions1:
-                quantity = pos['quantity']
-                if quantity > 0:
-                    instrument_token = pos['instrument_token']
-                    tradingsymbol = pos['tradingsymbol']
-                    option_type = tradingsymbol[-2:]
+    if trade_count == 0:
+        indic_candle1 = indicators_df5.iloc[-1]
+        indic_candle2 = indicators_df5.iloc[-2]
+        indic_candle3 = indicators_df5.iloc[-3]
+        indic_candle4 = indicators_df5.iloc[-4]
+        if strategy == "ADX_MACD_WillR_Supertrend":
+            # ✅ Check for signal
+            candle1_latest_adx = indic_candle1["ADX"]
+            candle1_latest_adxema = indic_candle1['ADX_EMA21']
+            candle1_latest_willr = indic_candle1['WillR_14']
+            candle1_latest_supertrend = indic_candle1['Supertrend']
+            candle1_latest_macd = indic_candle1['MACD']
+            candle1_latest_macd_signal = indic_candle1['MACD_signal']
+            candle1_close_price = float(indic_candle1['close'])
+            candle2_latest_adx = indic_candle2["ADX"]
+            candle2_latest_adxema = indic_candle2['ADX_EMA21']
+            candle2_latest_willr = indic_candle2['WillR_14']
+            candle2_latest_supertrend = indic_candle2['Supertrend']
+            candle2_latest_macd = indic_candle2['MACD']
+            candle2_latest_macd_signal = indic_candle2['MACD_signal']
+            candle2_close_price = float(indic_candle2['close'])
+            candle3_latest_adx = indic_candle3["ADX"]
+            candle3_latest_adxema = indic_candle3['ADX_EMA21']
+            candle3_latest_willr = indic_candle3['WillR_14']
+            candle3_latest_supertrend = indic_candle3['Supertrend']
+            candle3_latest_macd = indic_candle3['MACD']
+            candle3_latest_macd_signal = indic_candle3['MACD_signal']
+            candle3_close_price = float(indic_candle3['close'])
+            candle4_latest_adx = indic_candle4["ADX"]
+            candle4_latest_adxema = indic_candle4['ADX_EMA21']
+            candle4_latest_willr = indic_candle4['WillR_14']
+            candle4_latest_supertrend = indic_candle4['Supertrend']
+            candle4_latest_macd = indic_candle4['MACD']
+            candle4_latest_macd_signal = indic_candle4['MACD_signal']
+            candle4_close_price = float(indic_candle4['close'])
 
-                    if option_type == "CE" and ((latest_willr < -70 and latest_supertrend > close_price) or (
-                            latest_willr < -70 and latest_macd < latest_macd_signal) or (
-                                                        latest_supertrend > close_price and latest_macd < latest_macd_signal)):
-                        logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. CE exit condition met, closing existing CE position.", user_id = user_id, level = "info", log_type = "trading")
-                        upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL",close_price)
-                    elif option_type == "PE" and ((latest_willr > -30 and latest_supertrend < close_price) or (
-                            latest_willr > -30 and latest_macd > latest_macd_signal) or (
-                                                          latest_supertrend < close_price and latest_macd < latest_macd_signal)):
-                        logger_util.push_log(f"The existing position is type PE with symbol {tradingsymbol}. PE exit condition met, closing existing PE position.", user_id = user_id, level = "info", log_type = "trading")
-                        upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL",close_price)
-
-        positions = upstox_fetch_positions(user_id, upstox_access_token)
-        if latest_adx > latest_adxema and latest_willr > -30 and latest_supertrend < close_price and latest_macd > latest_macd_signal:
-            logger_util.push_log("🔼 BUY SIGNAL GENERATED", user_id = user_id, level = "info", log_type = "trading")
-            sys.stdout.flush()
-            if positions:
-                count = 0
-                for pos in positions:
-                    quantity = pos['quantity']
-                    if quantity > 0:
-                        count +=1
-                        tradingsymbol = pos['tradingsymbol']
-                        option_type = tradingsymbol[-2:]
-                        if option_type == "CE":
-                            logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. No new CALL trade placed ", user_id = user_id, level = "info", log_type = "trading")
-                if count == 0:
-                    logger_util.push_log(f"There are no live positions and BUY signal generated. Placing a new CE order", user_id = user_id, level = "info", log_type = "trading")
-                    upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots,"CE")
-            else:
-                logger_util.push_log(f"There are no positions and BUY signal generated. Placing a new CE order", user_id = user_id, level = "info", log_type = "trading")
-                upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type, close_price, tgt, lots, "CE")
-
-        elif latest_adx > latest_adxema and latest_willr < -70 and latest_supertrend > close_price and latest_macd < latest_macd_signal:
-            logger_util.push_log("🔽 SELL SIGNAL GENERATED", user_id = user_id, level = "info", log_type = "trading")
-            sys.stdout.flush()
-            if positions:
-                count = 0
-                for pos in positions:
-                    quantity = pos['quantity']
-                    if quantity > 0:
-                        count +=1
-                        tradingsymbol = pos['tradingsymbol']
-                        option_type = tradingsymbol[-2:]
-                        if option_type == "PE":
-                            logger_util.push_log(f"The existing position is type PE with symbol {tradingsymbol}. No new PUT trade placed ", user_id = user_id, level = "info", log_type = "trading")
-                if count == 0:
-                    upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots,"PE")
-                    logger_util.push_log(f"There are no live positions and SELL signal generated. Placing a new PE order", user_id = user_id, level = "info", log_type = "trading")
-            else:
-                upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
-                logger_util.push_log(f"There are no positions and SELL signal generated. Placing a new PE order", user_id = user_id, level = "info", log_type = "trading")
-        else:
-            logger_util.push_log("⏸️ NO TRADE SIGNAL GENERATED", user_id = user_id, level = "info", log_type = "trading")
-            sys.stdout.flush()
-
-    elif strategy == "Ema10_Ema20_Supertrend":
-        # ✅ Check for signal
-        latest_Ema10 = indicators_df["ema10"].iloc[-1]
-        latest_Ema20 = indicators_df['ema20'].iloc[-1]
-        latest_supertrend = indicators_df['Supertrend'].iloc[-1]
-        close_price = float(indicators_df['close'].iloc[-1])
-        tgt = float(tgt)
-
-        positions1 = upstox_fetch_positions(user_id, upstox_access_token)
-        if positions1:
-            for pos in positions1:
-                quantity = pos['quantity']
-                if quantity > 0:
-                    instrument_token = pos['instrument_token']
-                    tradingsymbol = pos['tradingsymbol']
-                    option_type = tradingsymbol[-2:]
-
-                    if option_type == "CE" and (latest_Ema10 < latest_Ema20 or latest_supertrend > close_price):
-                        upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", close_price)
-                        logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. CE exit condition met, closing existing CE position ", user_id = user_id, level = "info", log_type = "trading")
-                    elif option_type == "PE" and (latest_Ema10 > latest_Ema20 or latest_supertrend < close_price):
-                        upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", close_price)
-                        logger_util.push_log(f"The existing position is type PE with symbol {tradingsymbol}. PE exit condition met, closing existing PE position ", user_id = user_id, level = "info", log_type = "trading")
-
-        positions = upstox_fetch_positions(user_id, upstox_access_token)
-        if latest_Ema10 > latest_Ema20 and latest_supertrend < close_price:
-            logger_util.push_log("🔼BUY SIGNAL GENERATED", user_id = user_id, level = "info", log_type = "trading")
-            sys.stdout.flush()
-            if positions:
-                count = 0
-                for pos in positions:
-                    quantity = pos['quantity']
-                    if quantity > 0:
-                        count =+1
-                        tradingsymbol = pos['tradingsymbol']
-                        option_type = tradingsymbol[-2:]
-                        if option_type == "CE":
-                            logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. No new CALL trade placed ", user_id = user_id, level = "info", log_type = "trading")
-
-                if count == 0:
-                    upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
-                    logger_util.push_log(f"There are no live positions and BUY signal generated. Placing a new CE order", user_id = user_id, level = "info", log_type = "trading")
-            else:
-                upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
-                logger_util.push_log(f"There are no positions and BUY signal generated. Placing a new CE order", user_id = user_id, level = "info", log_type = "trading")
-
-        elif latest_Ema10 < latest_Ema20 and latest_supertrend > close_price:
-            logger_util.push_log("🔽 SELL SIGNAL GENERATED", user_id = user_id, level = "info", log_type = "trading")
-            sys.stdout.flush()
-            if positions:
-                count = 0
-                for pos in positions:
-                    quantity = pos['quantity']
-                    if quantity > 0:
-                        count +=1
-                        tradingsymbol = pos['tradingsymbol']
-                        option_type = tradingsymbol[-2:]
-                        if option_type == "PE":
-                            logger_util.push_log(f"The existing position is type PE with symbol {tradingsymbol}. No new PUT trade placed ", user_id = user_id, level = "info", log_type = "trading")
-
-                if count == 0:
-                    upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
-                    logger_util.push_log(f"There are no live positions and SELL signal generated. Placing a new PE order", user_id = user_id, level = "info", log_type = "trading")
-            else:
-                upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
-                logger_util.push_log(f"There are no positions and SELL signal generated. Placing a new PE order", user_id = user_id, level = "info", log_type = "trading")
-        else:
-            logger_util.push_log("⏸️NO TRADE SIGNAL GENERATED", user_id = user_id, level = "info", log_type = "trading")
-            sys.stdout.flush()
-    elif strategy == "Ema10_Ema20_MACD_Supertrend":
-        latest_Ema10 = indicators_df["ema10"].iloc[-1]
-        latest_Ema20 = indicators_df['ema20'].iloc[-1]
-        latest_supertrend = indicators_df['Supertrend'].iloc[-1]
-        latest_macd = indicators_df['MACD'].iloc[-1]
-        latest_macd_signal = indicators_df['MACD_signal'].iloc[-1]
-        close_price = float(indicators_df['close'].iloc[-1])
-        logger_util.push_log(f"{latest_Ema10}--{latest_Ema20}--{latest_supertrend}--{latest_macd}--{latest_macd_signal}--{close_price}", user_id = user_id, level = "info", log_type = "trading")
-        positions = upstox_fetch_positions(user_id, upstox_access_token)
-        if positions:
-            count = 0
-            for pos in positions:
-                quantity = pos['quantity']
-                if quantity > 0:
-                    count += 1
-                    instrument_token = pos['instrument_token']
-                    tradingsymbol = pos['tradingsymbol']
-                    option_type = tradingsymbol[-2:]
-                    if latest_Ema10 > latest_Ema20 and latest_supertrend < close_price and latest_macd > latest_macd_signal:
-                        if option_type == "CE":
-                            logger_util.push_log("BUY SIGNAL GENERATED. You have existing CALL position. No new order placed", user_id = user_id, level = "info", log_type = "trading")
-                        elif option_type == "PE":
-                            logger_util.push_log("BUY SIGNAL GENERATED.  Closing existing PUT Position and place new CALL order", user_id = user_id, level = "info", log_type = "trading")
-                            upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", 0)
-                            upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
-                    elif latest_Ema10 < latest_Ema20 and latest_supertrend > close_price and latest_macd < latest_macd_signal:
-                        if option_type == "PE":
-                            logger_util.push_log("SELL SIGNAL GENERATED. You have existing PUT position. No new order placed", user_id = user_id, level = "info", log_type = "trading")
-                        elif option_type == "CE":
-                            logger_util.push_log("SELL SIGNAL GENERATED.  Closing existing CALL Position and place new CALL order", user_id = user_id, level = "info", log_type = "trading")
-                            upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", 0)
-                            upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
-                    elif option_type == "CE":
-                        if latest_Ema10 < latest_Ema20 or latest_supertrend > close_price or latest_macd < latest_macd_signal:
-                            logger_util.push_log("NO Trade Signal Generated .CALL position exit condition met. Closing existing CALL position", user_id = user_id, level = "info", log_type = "trading")
-                            upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", 0)
-                    elif option_type == "PE":
-                        if latest_Ema10 > latest_Ema20 or latest_supertrend < close_price or latest_macd > latest_macd_signal:
-                            logger_util.push_log("NO Trade Signal Generated. PUT position exit condition met. Closing existing PUT position", user_id = user_id, level = "info", log_type = "trading")
-                            upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", 0)
-            if count == 0:
-                if latest_Ema10 > latest_Ema20 and latest_supertrend < close_price and latest_macd > latest_macd_signal:
-                    logger_util.push_log("BUY SIGNAL GENERATED. No live position exist. Placing new CALL order", user_id = user_id, level = "info", log_type = "trading")
-                    upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
-                elif latest_Ema10 < latest_Ema20 and latest_supertrend > close_price and latest_macd < latest_macd_signal:
-                    logger_util.push_log("SELL SIGNAL GENERATED. No live position exist. Placing new PUT order", user_id = user_id, level = "info", log_type = "trading")
-                    upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
+            if candle1_latest_adx > candle1_latest_adxema and candle1_latest_willr > -30 and candle1_latest_supertrend < candle1_close_price and candle1_latest_macd > candle1_latest_macd_signal:
+                logger_util.push_log(f"BUY SIGNAL GENERATED", user_id=user_id, level="signal_buy", log_type="trading")
+                if candle2_latest_adx < candle2_latest_adxema or candle2_latest_willr < -30 or candle2_latest_supertrend > candle2_close_price or candle2_latest_macd < candle2_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price,tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle3_latest_adx < candle3_latest_adxema or candle3_latest_willr < -30 or candle3_latest_supertrend > candle3_close_price or candle3_latest_macd < candle3_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price,tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle4_latest_adx < candle4_latest_adxema or candle4_latest_willr < -30 or candle4_latest_supertrend > candle4_close_price or candle4_latest_macd < candle4_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price,tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
                 else:
-                    logger_util.push_log("NO Trade Signal Generated", user_id = user_id, level = "info", log_type = "trading")
-        else:
-            if latest_Ema10 > latest_Ema20 and latest_supertrend < close_price and latest_macd > latest_macd_signal:
-                logger_util.push_log("BUY SIGNAL GENERATED. Placing new CALL order", user_id = user_id, level = "info", log_type = "trading")
-                upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
-            elif latest_Ema10 < latest_Ema20 and latest_supertrend > close_price and latest_macd < latest_macd_signal:
-                logger_util.push_log("SELL SIGNAL GENERATED. Placing new PUT order", user_id = user_id, level = "info", log_type = "trading")
-                upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
+                    logger_util.push_log("The Trade initiated after the Signal Generated and Signal Generated before 4 Intervals", user_id=user_id, level="info", log_type="trading")
+            elif candle1_latest_adx > candle1_latest_adxema and candle1_latest_willr < -70 and candle1_latest_supertrend > candle1_close_price and candle1_latest_macd < candle1_latest_macd_signal:
+                logger_util.push_log("🔽 SELL SIGNAL GENERATED", user_id=user_id, level="signal_sell", log_type="trading")
+                if candle2_latest_adx > candle2_latest_adxema or candle2_latest_willr > -70 or candle2_latest_supertrend < candle2_close_price or candle2_latest_macd > candle2_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price,tgt, lots, "PE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle3_latest_adx > candle3_latest_adxema or candle3_latest_willr > -70 or candle3_latest_supertrend < candle3_close_price or candle3_latest_macd > candle3_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price,tgt, lots, "PE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle4_latest_adx > candle4_latest_adxema or candle4_latest_willr > -70 or candle4_latest_supertrend < candle4_close_price or candle4_latest_macd > candle4_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price,tgt, lots, "PE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                else:
+                    logger_util.push_log("The Trade initiated after the Signal Generated and Signal Generated before 4 Intervals", user_id=user_id, level="info", log_type="trading")
             else:
-                logger_util.push_log("NO Trade Signal Generated", user_id = user_id, level = "info", log_type = "trading")
+                logger_util.push_log("NO TRADE SIGNAL GENERATED", user_id=user_id, level="signal_none", log_type="trading")
+
+        elif strategy == "Ema10_Ema20_Supertrend":
+            # ✅ Check for signal
+            candle1_latest_Ema10 = indic_candle1["ema10"]
+            candle1_latest_Ema20 = indic_candle1['ema20']
+            candle1_latest_supertrend = indic_candle1['Supertrend']
+            candle1_close_price = float(indic_candle1['close'])
+            candle2_latest_Ema10 = indic_candle2["ema10"]
+            candle2_latest_Ema20 = indic_candle2['ema20']
+            candle2_latest_supertrend = indic_candle2['Supertrend']
+            candle2_close_price = float(indic_candle2['close'])
+            candle3_latest_Ema10 = indic_candle3["ema10"]
+            candle3_latest_Ema20 = indic_candle3['ema20']
+            candle3_latest_supertrend = indic_candle3['Supertrend']
+            candle3_close_price = float(indic_candle3['close'])
+            candle4_latest_Ema10 = indic_candle4["ema10"]
+            candle4_latest_Ema20 = indic_candle4['ema20']
+            candle4_latest_supertrend = indic_candle4['Supertrend']
+            candle4_close_price = float(indic_candle4['close'])
+
+            if candle1_latest_Ema10 > candle1_latest_Ema20 and candle1_latest_supertrend < candle1_close_price:
+                logger_util.push_log(f"BUY SIGNAL GENERATED", user_id=user_id, level="signal_buy", log_type="trading")
+                if candle2_latest_Ema10 < candle2_latest_Ema20 or candle2_latest_supertrend > candle2_close_price:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle3_latest_Ema10 < candle3_latest_Ema20 or candle3_latest_supertrend > candle3_close_price:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle4_latest_Ema10 < candle4_latest_Ema20 or candle4_latest_supertrend > candle4_close_price:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                else:
+                    logger_util.push_log("The Trade initiated after the Signal Generated and Signal Generated before 4 Intervals", user_id=user_id, level="info", log_type="trading")
+            elif candle1_latest_Ema10 < candle1_latest_Ema20 and candle1_latest_supertrend > candle1_close_price:
+                logger_util.push_log("🔽 SELL SIGNAL GENERATED", user_id=user_id, level="signal_sell", log_type="trading")
+                if candle2_latest_Ema10 > candle2_latest_Ema20 or candle2_latest_supertrend < candle2_close_price:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "PE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle3_latest_Ema10 > candle3_latest_Ema20 or candle3_latest_supertrend < candle3_close_price:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "PE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle4_latest_Ema10 > candle4_latest_Ema20 or candle4_latest_supertrend < candle4_close_price:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "PE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                else:
+                    logger_util.push_log("The Trade initiated after the Signal Generated and Signal Generated before 4 Intervals", user_id=user_id, level="info", log_type="trading")
+            else:
+                logger_util.push_log("NO TRADE SIGNAL GENERATED", user_id=user_id, level="signal_none", log_type="trading")
+
+        elif strategy == "Ema10_Ema20_MACD_Supertrend":
+            candle1_latest_Ema10 = indic_candle1["ema10"]
+            candle1_latest_Ema20 = indic_candle1['ema20']
+            candle1_latest_supertrend = indic_candle1['Supertrend']
+            candle1_latest_macd = indic_candle1['MACD']
+            candle1_latest_macd_signal = indic_candle1['MACD_signal']
+            candle1_close_price = float(indic_candle1['close'])
+            candle2_latest_Ema10 = indic_candle2["ema10"]
+            candle2_latest_Ema20 = indic_candle2['ema20']
+            candle2_latest_supertrend = indic_candle2['Supertrend']
+            candle2_latest_macd = indic_candle2['MACD']
+            candle2_latest_macd_signal = indic_candle2['MACD_signal']
+            candle2_close_price = float(indic_candle2['close'])
+            candle3_latest_Ema10 = indic_candle3["ema10"]
+            candle3_latest_Ema20 = indic_candle3['ema20']
+            candle3_latest_supertrend = indic_candle3['Supertrend']
+            candle3_latest_macd = indic_candle3['MACD']
+            candle3_latest_macd_signal = indic_candle3['MACD_signal']
+            candle3_close_price = float(indic_candle3['close'])
+            candle4_latest_Ema10 = indic_candle4["ema10"]
+            candle4_latest_Ema20 = indic_candle4['ema20']
+            candle4_latest_supertrend = indic_candle4['Supertrend']
+            candle4_latest_macd = indic_candle4['MACD']
+            candle4_latest_macd_signal = indic_candle4['MACD_signal']
+            candle4_close_price = float(indic_candle4['close'])
+
+            if candle1_latest_Ema10 > candle1_latest_Ema20 and candle1_latest_supertrend < candle1_close_price and candle1_latest_macd > candle1_latest_macd_signal:
+                logger_util.push_log(f"BUY SIGNAL GENERATED", user_id=user_id, level="signal_buy", log_type="trading")
+                if candle2_latest_Ema10 < candle2_latest_Ema20 or candle2_latest_supertrend > candle2_close_price or candle2_latest_macd < candle2_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle3_latest_Ema10 < candle3_latest_Ema20 or candle3_latest_supertrend > candle3_close_price or candle3_latest_macd < candle3_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle4_latest_Ema10 < candle4_latest_Ema20 or candle4_latest_supertrend > candle4_close_price or candle4_latest_macd < candle4_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                else:
+                    logger_util.push_log("The Trade initiated after the Signal Generated and Signal Generated before 4 Intervals", user_id=user_id, level="info", log_type="trading")
+            elif candle1_latest_Ema10 < candle1_latest_Ema20 and candle1_latest_supertrend > candle1_close_price and candle1_latest_macd < candle1_latest_macd_signal:
+                logger_util.push_log("🔽 SELL SIGNAL GENERATED", user_id=user_id, level="signal_sell", log_type="trading")
+                if candle2_latest_Ema10 > candle2_latest_Ema20 or candle2_latest_supertrend < candle2_close_price or candle2_latest_macd > candle2_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle3_latest_Ema10 > candle3_latest_Ema20 or candle3_latest_supertrend < candle3_close_price or candle3_latest_macd > candle3_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                elif candle4_latest_Ema10 > candle4_latest_Ema20 or candle4_latest_supertrend < candle4_close_price or candle4_latest_macd > candle4_latest_macd_signal:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,candle1_close_price, tgt, lots, "CE")
+                    trade_count = 1
+                    stj.save_variable_to_json(trade_count, user_id, symbol, "trade_count")
+                else:
+                    logger_util.push_log("The Trade initiated after the Signal Generated and Signal Generated before 4 Intervals", user_id=user_id, level="info", log_type="trading")
+            else:
+                logger_util.push_log("NO TRADE SIGNAL GENERATED", user_id=user_id, level="signal_none", log_type="trading")
+        stj.save_variable_to_json(target_price, user_id, symbol)
+    elif trade_count > 0:
+        indicators_df = indicators_df5.tail(1)
+        positions11 = upstox_fetch_positions(user_id, upstox_access_token)
+        if positions11:
+            for pos in positions11:
+                quantity = pos['quantity']
+                if quantity > 0:
+                    instrument_token = pos['instrument_token']
+                    tradingsymbol = pos['tradingsymbol']
+                    option_type = tradingsymbol[-2:]
+                    match = re.match(r'^([A-Z]+)', tradingsymbol)
+                    if match:
+                        stock_name = match.group(1)
+                    else:
+                        stock_name = None
+                    latest_option_data = upstox_ohlc_data_fetch(user_id, upstox_access_token, instrument_token)
+                    latest_option_close = float(latest_option_data["close"])
+                    saved_target_price = stj.load_variable_from_json(user_id, symbol, "target_price")
+                    if latest_option_close > saved_target_price and saved_target_price != 0 and stock_name == symbol:
+                        upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL",
+                                                  saved_target_price)
+        if strategy == "ADX_MACD_WillR_Supertrend":
+            # ✅ Check for signal
+            latest_adx = indicators_df["ADX"].iloc[-1]
+            latest_adxema = indicators_df['ADX_EMA21'].iloc[-1]
+            latest_willr = indicators_df['WillR_14'].iloc[-1]
+            latest_supertrend = indicators_df['Supertrend'].iloc[-1]
+            latest_macd = indicators_df['MACD'].iloc[-1]
+            latest_macd_signal = indicators_df['MACD_signal'].iloc[-1]
+            close_price = float(indicators_df['close'].iloc[-1])
+            tgt = float(tgt)
+
+            positions1 = upstox_fetch_positions(user_id, upstox_access_token)
+            if positions1:
+                for pos in positions1:
+                    quantity = pos['quantity']
+                    if quantity > 0:
+                        instrument_token = pos['instrument_token']
+                        tradingsymbol = pos['tradingsymbol']
+                        option_type = tradingsymbol[-2:]
+                        logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. CE exit condition met, closing existing CE position.",
+                            user_id=user_id, level="info", log_type="trading")
+                        if option_type == "CE" and ((latest_willr < -70 and latest_supertrend > close_price) or (
+                                latest_willr < -70 and latest_macd < latest_macd_signal) or (
+                                                            latest_supertrend > close_price and latest_macd < latest_macd_signal)):
+                            logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. CE exit condition met, closing existing CE position.", user_id = user_id, level = "info", log_type = "trading")
+                            upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL",close_price)
+                        elif option_type == "PE" and ((latest_willr > -30 and latest_supertrend < close_price) or (
+                                latest_willr > -30 and latest_macd > latest_macd_signal) or (
+                                                              latest_supertrend < close_price and latest_macd < latest_macd_signal)):
+                            logger_util.push_log(f"The existing position is type PE with symbol {tradingsymbol}. PE exit condition met, closing existing PE position.", user_id = user_id, level = "info", log_type = "trading")
+                            upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL",close_price)
+
+            positions = upstox_fetch_positions(user_id, upstox_access_token)
+            if latest_adx > latest_adxema and latest_willr > -30 and latest_supertrend < close_price and latest_macd > latest_macd_signal:
+                logger_util.push_log("🔼 BUY SIGNAL GENERATED", user_id = user_id, level = "signal_buy", log_type = "trading")
+                sys.stdout.flush()
+                if positions:
+                    count = 0
+                    for pos in positions:
+                        quantity = pos['quantity']
+                        if quantity > 0:
+                            count +=1
+                            tradingsymbol = pos['tradingsymbol']
+                            option_type = tradingsymbol[-2:]
+                            if option_type == "CE":
+                                logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. No new CALL trade placed ", user_id = user_id, level = "info", log_type = "trading")
+                    if count == 0:
+                        logger_util.push_log(f"There are no live positions and BUY signal generated. Placing a new CE order", user_id = user_id, level = "info", log_type = "trading")
+                        target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots,"CE")
+                else:
+                    logger_util.push_log(f"There are no positions and BUY signal generated. Placing a new CE order", user_id = user_id, level = "info", log_type = "trading")
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type, close_price, tgt, lots, "CE")
+
+            elif latest_adx > latest_adxema and latest_willr < -70 and latest_supertrend > close_price and latest_macd < latest_macd_signal:
+                logger_util.push_log("🔽 SELL SIGNAL GENERATED", user_id = user_id, level = "signal_sell", log_type = "trading")
+                sys.stdout.flush()
+                if positions:
+                    count = 0
+                    for pos in positions:
+                        quantity = pos['quantity']
+                        if quantity > 0:
+                            count +=1
+                            tradingsymbol = pos['tradingsymbol']
+                            option_type = tradingsymbol[-2:]
+                            if option_type == "PE":
+                                logger_util.push_log(f"The existing position is type PE with symbol {tradingsymbol}. No new PUT trade placed ", user_id = user_id, level = "info", log_type = "trading")
+                    if count == 0:
+                        target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots,"PE")
+                        logger_util.push_log(f"There are no live positions and SELL signal generated. Placing a new PE order", user_id = user_id, level = "info", log_type = "trading")
+                else:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
+                    logger_util.push_log(f"There are no positions and SELL signal generated. Placing a new PE order", user_id = user_id, level = "info", log_type = "trading")
+            else:
+                logger_util.push_log("⏸️ NO TRADE SIGNAL GENERATED", user_id = user_id, level = "signal_none", log_type = "trading")
+                sys.stdout.flush()
+
+        elif strategy == "Ema10_Ema20_Supertrend":
+            # ✅ Check for signal
+            latest_Ema10 = indicators_df["ema10"].iloc[-1]
+            latest_Ema20 = indicators_df['ema20'].iloc[-1]
+            latest_supertrend = indicators_df['Supertrend'].iloc[-1]
+            close_price = float(indicators_df['close'].iloc[-1])
+            tgt = float(tgt)
+
+            positions1 = upstox_fetch_positions(user_id, upstox_access_token)
+            if positions1:
+                for pos in positions1:
+                    quantity = pos['quantity']
+                    if quantity > 0:
+                        instrument_token = pos['instrument_token']
+                        tradingsymbol = pos['tradingsymbol']
+                        option_type = tradingsymbol[-2:]
+
+                        if option_type == "CE" and (latest_Ema10 < latest_Ema20 or latest_supertrend > close_price):
+                            upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", close_price)
+                            logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. CE exit condition met, closing existing CE position ", user_id = user_id, level = "info", log_type = "trading")
+                        elif option_type == "PE" and (latest_Ema10 > latest_Ema20 or latest_supertrend < close_price):
+                            upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", close_price)
+                            logger_util.push_log(f"The existing position is type PE with symbol {tradingsymbol}. PE exit condition met, closing existing PE position ", user_id = user_id, level = "info", log_type = "trading")
+
+            positions = upstox_fetch_positions(user_id, upstox_access_token)
+            if latest_Ema10 > latest_Ema20 and latest_supertrend < close_price:
+                logger_util.push_log("🔼BUY SIGNAL GENERATED", user_id = user_id, level = "signal_buy", log_type = "trading")
+                sys.stdout.flush()
+                if positions:
+                    count = 0
+                    for pos in positions:
+                        quantity = pos['quantity']
+                        if quantity > 0:
+                            count =+1
+                            tradingsymbol = pos['tradingsymbol']
+                            option_type = tradingsymbol[-2:]
+                            if option_type == "CE":
+                                logger_util.push_log(f"The existing position is type CE with symbol {tradingsymbol}. No new CALL trade placed ", user_id = user_id, level = "info", log_type = "trading")
+
+                    if count == 0:
+                        target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
+                        logger_util.push_log(f"There are no live positions and BUY signal generated. Placing a new CE order", user_id = user_id, level = "info", log_type = "trading")
+                else:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
+                    logger_util.push_log(f"There are no positions and BUY signal generated. Placing a new CE order", user_id = user_id, level = "info", log_type = "trading")
+
+            elif latest_Ema10 < latest_Ema20 and latest_supertrend > close_price:
+                logger_util.push_log("🔽 SELL SIGNAL GENERATED", user_id = user_id, level = "signal_sell", log_type = "trading")
+                sys.stdout.flush()
+                if positions:
+                    count = 0
+                    for pos in positions:
+                        quantity = pos['quantity']
+                        if quantity > 0:
+                            count +=1
+                            tradingsymbol = pos['tradingsymbol']
+                            option_type = tradingsymbol[-2:]
+                            if option_type == "PE":
+                                logger_util.push_log(f"The existing position is type PE with symbol {tradingsymbol}. No new PUT trade placed ", user_id = user_id, level = "info", log_type = "trading")
+
+                    if count == 0:
+                        target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
+                        logger_util.push_log(f"There are no live positions and SELL signal generated. Placing a new PE order", user_id = user_id, level = "info", log_type = "trading")
+                else:
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
+                    logger_util.push_log(f"There are no positions and SELL signal generated. Placing a new PE order", user_id = user_id, level = "info", log_type = "trading")
+            else:
+                logger_util.push_log("⏸️NO TRADE SIGNAL GENERATED", user_id = user_id, level = "signal_none", log_type = "trading")
+                sys.stdout.flush()
+        elif strategy == "Ema10_Ema20_MACD_Supertrend":
+            latest_Ema10 = indicators_df["ema10"].iloc[-1]
+            latest_Ema20 = indicators_df['ema20'].iloc[-1]
+            latest_supertrend = indicators_df['Supertrend'].iloc[-1]
+            latest_macd = indicators_df['MACD'].iloc[-1]
+            latest_macd_signal = indicators_df['MACD_signal'].iloc[-1]
+            close_price = float(indicators_df['close'].iloc[-1])
+            logger_util.push_log(f"{latest_Ema10}--{latest_Ema20}--{latest_supertrend}--{latest_macd}--{latest_macd_signal}--{close_price}", user_id = user_id, level = "info", log_type = "trading")
+            positions = upstox_fetch_positions(user_id, upstox_access_token)
+            if positions:
+                count = 0
+                for pos in positions:
+                    quantity = pos['quantity']
+                    if quantity > 0:
+                        count += 1
+                        instrument_token = pos['instrument_token']
+                        tradingsymbol = pos['tradingsymbol']
+                        option_type = tradingsymbol[-2:]
+                        if latest_Ema10 > latest_Ema20 and latest_supertrend < close_price and latest_macd > latest_macd_signal:
+                            if option_type == "CE":
+                                logger_util.push_log("BUY SIGNAL GENERATED. You have existing CALL position. No new order placed", user_id = user_id, level = "signal_buy", log_type = "trading")
+                            elif option_type == "PE":
+                                logger_util.push_log("BUY SIGNAL GENERATED.  Closing existing PUT Position and place new CALL order", user_id = user_id, level = "signal_buy", log_type = "trading")
+                                upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", 0)
+                                target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
+                        elif latest_Ema10 < latest_Ema20 and latest_supertrend > close_price and latest_macd < latest_macd_signal:
+                            if option_type == "PE":
+                                logger_util.push_log("SELL SIGNAL GENERATED. You have existing PUT position. No new order placed", user_id = user_id, level = "signal_sell", log_type = "trading")
+                            elif option_type == "CE":
+                                logger_util.push_log("SELL SIGNAL GENERATED.  Closing existing CALL Position and place new CALL order", user_id = user_id, level = "signal_sell", log_type = "trading")
+                                upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", 0)
+                                target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
+                        elif option_type == "CE":
+                            if latest_Ema10 < latest_Ema20 or latest_supertrend > close_price or latest_macd < latest_macd_signal:
+                                logger_util.push_log("NO Trade Signal Generated .CALL position exit condition met. Closing existing CALL position", user_id = user_id, level = "signal_none", log_type = "trading")
+                                upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", 0)
+                        elif option_type == "PE":
+                            if latest_Ema10 > latest_Ema20 or latest_supertrend < close_price or latest_macd > latest_macd_signal:
+                                logger_util.push_log("NO Trade Signal Generated. PUT position exit condition met. Closing existing PUT position", user_id = user_id, level = "signal_none", log_type = "trading")
+                                upstox_place_order_single(user_id, upstox_access_token, instrument_token, quantity, "SELL", 0)
+                if count == 0:
+                    if latest_Ema10 > latest_Ema20 and latest_supertrend < close_price and latest_macd > latest_macd_signal:
+                        logger_util.push_log("BUY SIGNAL GENERATED. No live position exist. Placing new CALL order", user_id = user_id, level = "signal_buy", log_type = "trading")
+                        target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
+                    elif latest_Ema10 < latest_Ema20 and latest_supertrend > close_price and latest_macd < latest_macd_signal:
+                        logger_util.push_log("SELL SIGNAL GENERATED. No live position exist. Placing new PUT order", user_id = user_id, level = "signal_sell", log_type = "trading")
+                        target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
+                    else:
+                        logger_util.push_log("NO Trade Signal Generated", user_id = user_id, level = "signal_none", log_type = "trading")
+            else:
+                if latest_Ema10 > latest_Ema20 and latest_supertrend < close_price and latest_macd > latest_macd_signal:
+                    logger_util.push_log("BUY SIGNAL GENERATED. Placing new CALL order", user_id = user_id, level = "signal_buy", log_type = "trading")
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "CE")
+                elif latest_Ema10 < latest_Ema20 and latest_supertrend > close_price and latest_macd < latest_macd_signal:
+                    logger_util.push_log("SELL SIGNAL GENERATED. Placing new PUT order", user_id = user_id, level = "signal_sell", log_type = "trading")
+                    target_price = upstox_fetch_option_data(user_id, upstox_access_token, stock, symbol, exchange_type,close_price, tgt, lots, "PE")
+                else:
+                    logger_util.push_log("NO Trade Signal Generated", user_id = user_id, level = "signal_none", log_type = "trading")
+
+        stj.save_variable_to_json(target_price, user_id, symbol)
