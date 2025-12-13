@@ -5,8 +5,8 @@ from email.mime.multipart import MIMEMultipart
 # Update these with your Gmail details
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-SENDER_EMAIL = "sivag.prasad88@gmail.com"
-APP_PASSWORD = "vueiidvhyuyhqqla"   # <- use Gmail app password, not your login password
+SENDER_EMAIL = "vijayaranikraja@gmail.com"
+APP_PASSWORD = "grhipvvndpdsbrhz"   # <- use Gmail app password, not your login password
 
 def send_email(to_email, subject, body):
     try:
